@@ -102,6 +102,43 @@ func (d *dag) CreateDagVars(ctx context.Context, dagVars []*DagVarModel, isCreat
 
 ---
 
+### 1.4 边界条件处理
+
+**空集合处理**：
+- `toDelete` 为空：跳过 DELETE 操作
+- `toInsert` 为空：跳过 INSERT 操作
+- `toUpdate` 为空：跳过 UPDATE 操作
+
+**批量大小限制**：
+- `IN (...)` 子句和批量 INSERT 不需要分页处理
+- 原因：单个 DAG 的 var/step/accessor 数量有限（通常 < 100），不会超过 MySQL 查询限制
+- 如果未来数量增长，可添加 chunk 分页逻辑
+
+**UPDATE 实现**：
+- 使用逐行 UPDATE（非批量）
+- 原因：每行需要更新的值不同，批量 UPDATE 语法复杂
+- 性能影响：可接受，因为 var 数量通常很少
+
+---
+
+### 1.5 并发安全性
+
+**事务隔离保证**：
+- 所有操作（SELECT + diff + INSERT/UPDATE/DELETE）在同一事务内执行
+- REPEATABLE READ 隔离级别确保事务内看到一致的数据快照
+
+**竞态窗口**：
+- SELECT 和后续操作之间存在时间窗口
+- 但窗口极小，且在同一事务内
+- 即使另一事务修改了数据，当前事务会等待锁或检测到冲突后回滚
+- **结论**：无需额外的乐观锁机制
+
+**幂等性**：
+- 同一 DAG 的更新操作是幂等的
+- 相同数据多次更新结果一致
+
+---
+
 ### 2. refreshDagIndexes 优化
 
 #### 2.1 新增参数
@@ -134,7 +171,7 @@ func (d *dag) refreshDagIndexes(ctx context.Context, dag *entity.Dag, isCreate b
 │   1. SELECT f_id, f_accessor_id                             │
 │      FROM t_flow_dag_accessor WHERE f_dag_id = ?             │
 │   2. diff by f_accessor_id                                   │
-│   3. 精确 DELETE/INSERT/UPDATE                               │
+│   3. 精确 DELETE/INSERT（无 UPDATE）                          │
 │ }                                                            │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -144,7 +181,25 @@ func (d *dag) refreshDagIndexes(ctx context.Context, dag *entity.Dag, isCreate b
 | 表 | 唯一标识 | 更新判断字段 |
 |-----|---------|-------------|
 | `t_flow_dag_step` | `(f_operator, f_source_id)` | `f_has_datasource` |
-| `t_flow_dag_accessor` | `f_accessor_id` | 无（仅 INSERT/DELETE） |
+| `t_flow_dag_accessor` | `f_accessor_id` | 无变化字段，仅 INSERT/DELETE |
+
+#### 2.4 边界条件处理
+
+- `t_flow_dag_accessor` 表无 UPDATE 操作：accessor 记录仅存在或不存在
+- 空集合处理同 1.4 节
+
+---
+
+### 3. 错误处理策略
+
+**事务原子性**：
+- 所有操作（DELETE/INSERT/UPDATE）在同一个事务内
+- 任一操作失败 → 整个事务回滚
+- 保证数据一致性
+
+**错误传播**：
+- 返回错误给调用方
+- 调用方根据错误类型决定重试或其他处理
 
 ---
 
@@ -222,6 +277,46 @@ type diffResult[T any] struct {
 2. **功能正确**：Create/Update DAG 功能与修改前一致
 3. **性能不降**：新建场景无额外查询开销
 4. **测试覆盖**：diff 逻辑有单元测试覆盖
+
+---
+
+## 测试计划
+
+### 单元测试
+
+| 测试项 | 测试内容 |
+|--------|----------|
+| `TestDiffDagVars` | diff 计算正确性（新增、更新、删除、无变化） |
+| `TestDiffDagSteps` | step diff 计算正确性 |
+| `TestDiffDagAccessors` | accessor diff 计算正确性 |
+| `TestEmptyDiff` | 空集合边界条件 |
+| `TestIsCreatePath` | isCreate=true 时跳过查询删除 |
+
+### 集成测试
+
+| 测试项 | 测试内容 |
+|--------|----------|
+| `TestCreateDagEndToEnd` | 完整创建 DAG 流程 |
+| `TestUpdateDagEndToEnd` | 完整更新 DAG 流程 |
+
+### 并发测试
+
+| 测试项 | 测试内容 |
+|--------|----------|
+| `TestConcurrentCreateDag` | 10 个并发创建不同 DAG，验证无死锁 |
+| `TestConcurrentUpdateDag` | 10 个并发更新同一 DAG，验证无死锁 |
+
+### 性能基准
+
+| 指标 | 基准线 | 目标 |
+|------|--------|------|
+| 创建 DAG 耗时 | 当前值 | ≤ 当前值 |
+| 更新 DAG 耗时 | 当前值 | ≤ 当前值 × 1.1（允许 10% 波动） |
+
+**基准测试方法**：
+1. 修改前运行 100 次，取平均值
+2. 修改后运行 100 次，取平均值
+3. 对比性能差异
 
 ---
 
