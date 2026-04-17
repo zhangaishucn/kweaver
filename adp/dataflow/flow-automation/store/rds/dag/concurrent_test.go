@@ -29,8 +29,7 @@ func TestConcurrentCreateDag(t *testing.T) {
 			defer wg.Done()
 
 			dag := &entity.Dag{
-				ID:   fmt.Sprintf("test_dag_%d_%d", time.Now().UnixNano(), idx),
-				Name: fmt.Sprintf("Concurrent Test DAG %d", idx),
+				Name: fmt.Sprintf("Concurrent Test DAG %d %d", time.Now().UnixNano(), idx),
 				Vars: entity.DagVars{
 					fmt.Sprintf("var_%d", idx): {DefaultValue: "val"},
 				},
