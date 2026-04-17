@@ -409,6 +409,42 @@ func (d *dag) CreateDag(ctx context.Context, dagEntity *entity.Dag) (string, err
 	return dagEntity.ID, err
 }
 
+// getExistingDagVars 查询现有变量
+func (d *dag) getExistingDagVars(ctx context.Context, dagID uint64) ([]existingDagVar, error) {
+	db, _, cancel := d.dbWithContext(ctx)
+	defer cancel()
+
+	var vars []existingDagVar
+	sqlStr := `SELECT f_var_name, f_default_value, f_var_type, f_description FROM t_flow_dag_var WHERE f_dag_id = ?`
+	trace.SetAttributes(ctx, attribute.String(trace.TABLE_NAME, DAGVAR_TABLENAME), attribute.String(trace.DB_SQL, sqlStr))
+	err := db.Raw(sqlStr, dagID).Scan(&vars).Error
+	return vars, err
+}
+
+// getExistingDagSteps 查询现有步骤
+func (d *dag) getExistingDagSteps(ctx context.Context, dagID uint64) ([]existingDagStep, error) {
+	db, _, cancel := d.dbWithContext(ctx)
+	defer cancel()
+
+	var steps []existingDagStep
+	sqlStr := `SELECT f_id, f_operator, f_source_id, f_has_datasource FROM t_flow_dag_step WHERE f_dag_id = ?`
+	trace.SetAttributes(ctx, attribute.String(trace.TABLE_NAME, DAGSTEPINDEX_TABLENAME), attribute.String(trace.DB_SQL, sqlStr))
+	err := db.Raw(sqlStr, dagID).Scan(&steps).Error
+	return steps, err
+}
+
+// getExistingDagAccessors 查询现有访问者
+func (d *dag) getExistingDagAccessors(ctx context.Context, dagID uint64) ([]existingDagAccessor, error) {
+	db, _, cancel := d.dbWithContext(ctx)
+	defer cancel()
+
+	var accessors []existingDagAccessor
+	sqlStr := `SELECT f_id, f_accessor_id FROM t_flow_dag_accessor WHERE f_dag_id = ?`
+	trace.SetAttributes(ctx, attribute.String(trace.TABLE_NAME, DAGACCESSORINDEX_TABLENAME), attribute.String(trace.DB_SQL, sqlStr))
+	err := db.Raw(sqlStr, dagID).Scan(&accessors).Error
+	return accessors, err
+}
+
 func (d *dag) CreateDagVars(ctx context.Context, dagVars []*DagVarModel) error {
 	var err error
 	newCtx, span := trace.StartInternalSpan(ctx)
